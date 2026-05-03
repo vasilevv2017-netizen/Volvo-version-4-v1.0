@@ -1,0 +1,6 @@
+{
+  "name": "Volvo V4 Parameter Pro",
+  "description": "High-performance analyzer for Volvo Version 4 vehicle parameters, designed for large-scale CSV files.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
