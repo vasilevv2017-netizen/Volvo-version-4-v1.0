@@ -26,7 +26,11 @@ import {
   Sparkles,
   Database,
   Trash2,
-  HardDrive
+  HardDrive,
+  Globe,
+  RotateCcw,
+  Zap,
+  Share
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
@@ -42,7 +46,7 @@ export default function App() {
   const [isDbLoading, setIsDbLoading] = useState(true);
   const [dbStatus, setDbStatus] = useState<{ count: number; date: string | null }>({ count: 0, date: null });
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState<'table' | 'analysis' | 'ai' | 'compare' | 'storage'>('table');
+  const [activeTab, setActiveTab] = useState<'home' | 'storage' | 'table' | 'profile' | 'ai' | 'compare'>('home');
   const [currentView, setCurrentView] = useState<'main' | 'applied_upload'>('main');
 
   // Load from IndexedDB on mount
@@ -78,6 +82,9 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [sortConfig, setSortConfig] = useState<{ key: keyof VolvoParameter; direction: 'asc' | 'desc' } | null>(null);
   const [selectedParam, setSelectedParam] = useState<VolvoParameter | null>(null);
+  const [isTranslated, setIsTranslated] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translatedData, setTranslatedData] = useState<{ caption: string, description: string, dataDefinition: string, audiences: string } | null>(null);
   const [isExporting, setIsExporting] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dbFileInputRef = useRef<HTMLInputElement>(null);
@@ -110,6 +117,7 @@ export default function App() {
 
   const [messages, setMessages] = useState<{ role: 'user' | 'ai'; content: string }[]>([]);
   const [compareMessages, setCompareMessages] = useState<{ role: 'user' | 'ai'; content: string }[]>([]);
+  const [isVerifying, setIsVerifying] = useState<number | null>(null);
   const [userInput, setUserInput] = useState('');
   const [isWaitingForAI, setIsWaitingForAI] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
@@ -170,6 +178,50 @@ export default function App() {
     }
   };
 
+  const handlePreprocessData = async () => {
+    if (!data.length || isProcessing) return;
+    
+    setIsProcessing(true);
+    try {
+      const { preprocessParameters } = await import('./services/geminiService');
+      const processed = preprocessParameters(data);
+      
+      setData(processed);
+      await saveParameters(processed);
+      
+      const date = new Date().toLocaleString();
+      localStorage.setItem('db_last_update', date);
+      setDbStatus(prev => ({ ...prev, date }));
+      
+      alert("База данных оптимизирована. Логи размечены, приоритеты расставлены.");
+    } catch (err) {
+      console.error(err);
+      alert("Ошибка при обработке базы.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleResetOptimization = async () => {
+    if (!data.length || isProcessing) return;
+    
+    setIsProcessing(true);
+    try {
+      const { resetParameters } = await import('./services/geminiService');
+      const reseted = resetParameters(data);
+      
+      setData(reseted);
+      await saveParameters(reseted);
+      
+      alert("Оптимизация сброшена. Все параметры возвращены в общий поиск.");
+    } catch (err) {
+      console.error(err);
+      alert("Ошибка при сбросе базы.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const handleExportConfig = () => {
     const config = {
       version: '1.0',
@@ -205,7 +257,7 @@ export default function App() {
               setAppliedCodes(new Set(config.appliedCodes));
               if (config.hideLogging !== undefined) setHideLogging(config.hideLogging);
               if (config.showAppliedOnly !== undefined) setShowAppliedOnly(config.showAppliedOnly);
-              setCurrentView('main');
+              setActiveTab('table');
               return;
             }
           } catch (e) {
@@ -215,7 +267,7 @@ export default function App() {
         const codes = content.split(/[\s,]+/).map(c => c.trim().toLowerCase()).filter(c => c.length > 0);
         setAppliedCodes(new Set(codes));
         setShowAppliedOnly(true);
-        setCurrentView('main');
+        setActiveTab('table');
       }
     };
     reader.readAsText(file);
@@ -344,6 +396,39 @@ ${topParameters}
     }));
   };
 
+  const handleTranslate = async () => {
+    if (!selectedParam || isTranslating) return;
+    
+    if (isTranslated) {
+      setIsTranslated(false);
+      return;
+    }
+
+    if (translatedData) {
+      setIsTranslated(true);
+      return;
+    }
+
+    setIsTranslating(true);
+    try {
+      const { translateParameter } = await import('./services/geminiService');
+      const result = await translateParameter(process.env.GEMINI_API_KEY!, selectedParam);
+      setTranslatedData(result);
+      setIsTranslated(true);
+    } catch (error) {
+      console.error("Translation ERROR:", error);
+      alert("Не удалось перевести. Проверьте соединение или квоту ИИ.");
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  const openParamDetails = (param: VolvoParameter) => {
+    setSelectedParam(param);
+    setIsTranslated(false);
+    setTranslatedData(null);
+  };
+
   const handleAskAI = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!userInput.trim() || isWaitingForAI || !data.length) return;
@@ -357,15 +442,7 @@ ${topParameters}
       // Step 1: Find relevant parameters from the 30k rows
       const { findRelevantParameters, askGeminiAboutParameters } = await import('./services/geminiService');
       
-      let searchData = data;
-      if (hideLogging) {
-        searchData = data.filter(item => {
-          const text = `${item.DefaultCaption} ${item.DefaultDescription}`.toLowerCase();
-          return !LOGGING_KEYWORDS.some(keyword => text.includes(keyword));
-        });
-      }
-
-      const relevantContext = findRelevantParameters(searchData, query, appliedCodes);
+      const relevantContext = findRelevantParameters(data, query, appliedCodes, 250, hideLogging);
 
       // Step 2: Use Gemini to analyze
       const answer = await askGeminiAboutParameters(
@@ -396,6 +473,39 @@ ${topParameters}
     }
   };
 
+  const handleVerifyWithWeb = async (index: number) => {
+    const msg = messages[index];
+    if (msg.role !== 'ai') return;
+
+    setIsVerifying(index);
+    try {
+      const { verifyWithWeb } = await import('./services/geminiService');
+      
+      // Find the user's question matching this AI answer (usually the previous message)
+      const userQuestion = index > 0 ? messages[index - 1].content : "Сверка текущего анализа";
+      
+      const verification = await verifyWithWeb(
+        process.env.GEMINI_API_KEY!,
+        userQuestion,
+        msg.content
+      );
+      
+      setMessages(prev => [
+        ...prev, 
+        { 
+          role: 'ai', 
+          content: `### 🌐 СВЕРКА С WEB (ENGINEERING AUDIT)\n\n${verification}` 
+        }
+      ]);
+    } catch (err) {
+      console.error(err);
+      alert("Ошибка при веб-сверке. Проверьте соединение или квоту ИИ.");
+    } finally {
+      setIsVerifying(null);
+      setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  };
+
   const handleDeepAnalysis = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!userInput.trim() || isWaitingForAI || !data.length || !appliedCodes) {
@@ -409,19 +519,10 @@ ${topParameters}
     setIsWaitingForAI(true);
 
     try {
-      const { performDeepAnalysis } = await import('./services/geminiService');
+      const { findRelevantParameters, performDeepAnalysis } = await import('./services/geminiService');
       
-      let searchData = data.filter(item => appliedCodes.has(item.ParameterCode?.toLowerCase() || ""));
-      
-      if (hideLogging) {
-        searchData = searchData.filter(item => {
-          const text = `${item.DefaultCaption} ${item.DefaultDescription}`.toLowerCase();
-          return !LOGGING_KEYWORDS.some(keyword => text.includes(keyword));
-        });
-      }
-
-      // We take up to 2000 parameters for deep analysis to provide complete context for almost any profile
-      const fullContext = searchData.slice(0, 2000).map(p => ({ ...p, isApplied: true }));
+      // Find top 2000 parameters (mix of applied and relevant base codes) as per engineering report
+      const fullContext = findRelevantParameters(data, query, appliedCodes, 2000, hideLogging);
 
       const answer = await performDeepAnalysis(
         process.env.GEMINI_API_KEY!, 
@@ -453,14 +554,7 @@ ${topParameters}
       const { findRelevantParameters, askGeminiToCompare } = await import('./services/geminiService');
       
       const prepareData = (codes: Set<string>, hLogging: boolean) => {
-        let sData = data;
-        if (hLogging) {
-          sData = data.filter(item => {
-            const text = `${item.DefaultCaption} ${item.DefaultDescription}`.toLowerCase();
-            return !LOGGING_KEYWORDS.some(keyword => text.includes(keyword));
-          });
-        }
-        return findRelevantParameters(sData, query, codes, 150);
+        return findRelevantParameters(data, query, codes, 200, hLogging);
       };
 
       const context1 = prepareData(appliedCodes, hideLogging);
@@ -617,11 +711,12 @@ ${topParameters}
       {data.length > 0 && (
         <div className="lg:hidden border-b border-ink flex bg-[#D8D7D4]/30 p-1 shrink-0 overflow-x-auto no-scrollbar">
           {[
-            { id: 'table', icon: Filter, label: 'Данные' },
-            { id: 'analysis', icon: BarChart3, label: 'Статистика' },
+            { id: 'home', icon: Info, label: 'ИНФО' },
             { id: 'storage', icon: Database, label: 'БАЗА' },
-            { id: 'ai', icon: Terminal, label: 'Чат ИИ' },
-            { id: 'compare', icon: GitCompare, label: 'Сравнение' }
+            { id: 'profile', icon: Settings2, label: 'ПРОФИЛЬ' },
+            { id: 'table', icon: Filter, label: 'ДАННЫЕ' },
+            { id: 'ai', icon: Terminal, label: 'ЧАТ ИИ' },
+            { id: 'compare', icon: GitCompare, label: 'СРАВНЕНИЕ' }
           ].map(tab => (
             <button
               key={tab.id}
@@ -678,11 +773,12 @@ ${topParameters}
                   </button>
                 </div>
                 
-                <div className="space-y-2 pt-4">
+                <div className="space-y-1.5 pt-4">
                     {[
+                      { id: 'home', icon: Info, label: 'ГЛАВНАЯ (Инфо)' },
                       { id: 'table', icon: Filter, label: 'Реестр данных' },
-                      { id: 'analysis', icon: BarChart3, label: 'Аналитика' },
                       { id: 'storage', icon: Database, label: 'БАЗА (Память)' },
+                      { id: 'profile', icon: Settings2, label: 'ПРОФИЛЬ (Active)' },
                       { id: 'ai', icon: Terminal, label: 'Чат с ИИ' },
                       { id: 'compare', icon: GitCompare, label: 'Сравнение ИИ' }
                     ].map(tab => (
@@ -732,54 +828,7 @@ ${topParameters}
         {/* Dynamic Content Area */}
         <main className="flex-1 flex flex-col overflow-hidden bg-white/40 relative">
           <AnimatePresence mode="wait">
-            {currentView === 'applied_upload' ? (
-              <motion.div 
-                key="applied_upload"
-                initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-                className="flex-1 flex flex-col items-center justify-center p-12 text-center bg-paper/95 backdrop-blur-md z-50 absolute inset-0"
-              >
-                <button 
-                  onClick={() => setCurrentView('main')}
-                  className="absolute top-16 left-8 flex items-center gap-2 text-[10px] font-mono uppercase opacity-50 hover:opacity-100 transition-all border border-ink/20 px-3 py-1.5"
-                >
-                  <ChevronDown className="w-3 h-3 rotate-90" />
-                  Назад
-                </button>
-
-                <div className="w-20 h-20 border border-ink/20 flex items-center justify-center mb-8 bg-white/50">
-                  <Download className="w-10 h-10 opacity-30" />
-                </div>
-                <h2 className="text-3xl font-serif italic mb-4">Загрузка примененных параметров</h2>
-                <p className="text-ink/60 font-mono text-xs max-w-md mb-12 leading-relaxed">
-                  Загрузите текстовый файл (.txt) со списком кодов, которые реально используются в машине. 
-                  Коды должны быть разделены запятыми (напр. p1aaa, p1aab). 
-                  Это позволит отфильтровать общую базу (~33k) до конкретно этого автомобиля (~9k).
-                </p>
-
-                <div className="flex flex-col gap-4 w-full max-w-sm">
-                  <button 
-                    onClick={() => appliedFileInputRef.current?.click()}
-                    className="w-full border border-ink px-12 py-4 font-mono uppercase text-xs hover:bg-ink hover:text-paper transition-all tracking-widest"
-                  >
-                    ВЫБРАТЬ СПИСОК ПАРАМЕТРОВ
-                  </button>
-                  <button 
-                    onClick={handleExportConfig}
-                    className="w-full border border-ink/20 px-12 py-4 font-mono uppercase text-[10px] hover:bg-ink/5 transition-all tracking-widest opacity-60 hover:opacity-100"
-                  >
-                    ЭКСПОРТ КОНФИГУРАЦИИ
-                  </button>
-                  {appliedCodes && (
-                    <button 
-                      onClick={() => { setAppliedCodes(null); setShowAppliedOnly(false); setCurrentView('main'); }}
-                      className="text-[10px] font-mono uppercase opacity-40 hover:opacity-100 underline decoration-dotted underline-offset-4"
-                    >
-                      Сбросить текущий список ({appliedCodes.size} шт)
-                    </button>
-                  )}
-                </div>
-              </motion.div>
-            ) : (isProcessing || isDbLoading) ? (
+            {(isProcessing || isDbLoading) ? (
               <motion.div 
                 key="loading"
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -797,19 +846,60 @@ ${topParameters}
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                 className="flex-1 flex flex-col items-center justify-center p-12 text-center"
               >
-                <div className="w-20 h-20 border border-ink/20 flex items-center justify-center mb-8 rotate-3">
+                <div className="w-20 h-20 border border-ink/20 flex items-center justify-center mb-8 rotate-3 bg-white/50">
                   <CarFront className="w-10 h-10 opacity-20" />
                 </div>
-                <h2 className="text-3xl font-serif italic mb-4">Метаданные диагностики не загружены</h2>
-                <p className="text-ink/60 font-mono text-xs max-w-sm mb-8 leading-relaxed">
-                  Система ожидает файл .csv в соответствии со спецификациями телеметрии Volvo версии 4.
+                <h2 className="text-4xl font-serif italic mb-6">Volvo Protocol Explorer</h2>
+                <p className="text-ink/60 font-mono text-sm max-w-lg mb-12 leading-relaxed">
+                  Профессиональный инструмент анализа телеметрии и диагностических параметров 
+                  автомобилей Volvo (V4). Система поддерживает работу с базами данных свыше 30,000 записей 
+                  и предлагает ИИ-консультации по конфигурациям.
                 </p>
-                <button 
-                  onClick={() => fileInputRef.current?.click()}
-                  className="border border-ink px-12 py-4 font-mono uppercase text-xs hover:bg-ink hover:text-paper transition-all tracking-widest"
-                >
-                  Выбрать файл
-                </button>
+                <div className="flex flex-col gap-4">
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="border border-ink px-12 py-5 bg-ink text-paper font-mono uppercase text-sm hover:opacity-90 transition-all tracking-widest font-bold shadow-xl"
+                  >
+                    Загрузить CSV (34k параметров)
+                  </button>
+                  <p className="text-[10px] font-mono opacity-40 uppercase">Ожидание инициализации потока данных</p>
+                </div>
+              </motion.div>
+            ) : currentView === 'applied_upload' ? (
+              <motion.div 
+                key="applied_upload"
+                initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
+                className="flex-1 flex flex-col items-center justify-start p-8 md:p-16 text-center bg-paper/50"
+              >
+                <h2 className="text-3xl font-serif italic mb-4">Загрузка файла комплектации</h2>
+                <p className="text-ink/60 font-mono text-xs max-w-md mb-8 leading-relaxed">
+                  Добавьте технический список активных кодов автомобиля (Active codes), 
+                  чтобы ИИ мог анализировать именно ваше шасси.
+                </p>
+
+                <div className="flex flex-col gap-4 w-full max-w-sm">
+                  <button 
+                    onClick={() => appliedFileInputRef.current?.click()}
+                    className="w-full border border-ink px-6 py-4 font-mono uppercase text-xs hover:bg-ink hover:text-paper transition-all tracking-widest flex items-center justify-center gap-3 font-bold shadow-lg"
+                  >
+                    <UploadCloud className="w-4 h-4" />
+                    ВЫБРАТЬ СПИСОК (Active codes)
+                  </button>
+                  <button 
+                    onClick={() => setCurrentView('main')}
+                    className="w-full border border-ink/20 px-6 py-3 font-mono uppercase text-[10px] hover:bg-ink/5 transition-all"
+                  >
+                    ОТМЕНА
+                  </button>
+                  {appliedCodes && (
+                    <button 
+                      onClick={() => { setAppliedCodes(null); setShowAppliedOnly(false); setCurrentView('main'); }}
+                      className="text-[10px] font-mono uppercase opacity-40 hover:opacity-100 underline decoration-dotted underline-offset-4 mt-4"
+                    >
+                      Сбросить текущий список ({appliedCodes.size} шт)
+                    </button>
+                  )}
+                </div>
               </motion.div>
             ) : (
               <motion.div 
@@ -818,6 +908,88 @@ ${topParameters}
                 className="flex-1 flex flex-col overflow-hidden"
               >
                 {/* Tab Content: Interaction Layouts */}
+                {activeTab === 'home' && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                    className="flex-1 flex flex-col items-center justify-center p-12 text-center bg-paper/30"
+                  >
+                    <div className="w-20 h-20 border border-ink flex items-center justify-center mb-8 rotate-3 bg-white/50">
+                      <CarFront className="w-10 h-10 opacity-20" />
+                    </div>
+                    <h2 className="text-4xl font-serif italic mb-6">Volvo Protocol Explorer</h2>
+                    <p className="text-ink/60 font-mono text-sm max-w-lg mb-12 leading-relaxed">
+                      Управление активной сессией диагностики. База параметров (34k) загружена и готова к фильтрации 
+                      по вашему профилю. Используйте чат с ИИ для расшифровки сложных взаимосвязей.
+                    </p>
+                    
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-xl">
+                      <div className="border border-ink p-6 bg-white/50 text-left space-y-3">
+                        <div className="flex justify-between items-center">
+                          <h3 className="font-mono text-[10px] font-bold uppercase opacity-40">База параметров</h3>
+                          <Database className="w-3 h-3 opacity-20" />
+                        </div>
+                        <p className="text-sm font-mono font-bold">{data.length.toLocaleString()} записей</p>
+                        <button 
+                          onClick={() => fileInputRef.current?.click()}
+                          className="w-full bg-ink text-paper py-3 font-mono text-[10px] uppercase hover:opacity-90 transition-all font-bold"
+                        >
+                          Загрузить другую базу
+                        </button>
+                      </div>
+                      <div className="border border-ink p-6 bg-white/50 text-left space-y-3">
+                        <div className="flex justify-between items-center">
+                          <h3 className="font-mono text-[10px] font-bold uppercase opacity-40">Профиль авто</h3>
+                          <Settings2 className="w-3 h-3 opacity-20" />
+                        </div>
+                        <p className="text-sm font-mono font-bold">{appliedCodes ? `${appliedCodes.size} активных кодов` : "Не загружен"}</p>
+                        <button 
+                          onClick={() => setCurrentView('applied_upload')}
+                          className="w-full border border-ink py-3 font-mono text-[10px] uppercase hover:bg-ink hover:text-paper transition-all font-bold"
+                        >
+                          {appliedCodes ? "Обновить профиль" : "Загрузить коды"}
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {activeTab === 'profile' && (
+                  <motion.div 
+                    initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
+                    className="flex-1 flex flex-col items-center justify-start p-8 md:p-16 text-center bg-paper/50 overflow-auto"
+                  >
+                    <h2 className="text-3xl font-serif italic mb-4">Примененные параметры машины</h2>
+                    <p className="text-ink/60 font-mono text-xs max-w-md mb-8 leading-relaxed">
+                      Загрузите список кодов (txt/csv), которые реально используются в конкретном автомобиле. 
+                      Это позволит отфильтровать общую базу (~34k) до рабочих параметров этого шасси.
+                    </p>
+
+                    <div className="flex flex-col gap-4 w-full max-w-sm">
+                      <button 
+                        onClick={() => appliedFileInputRef.current?.click()}
+                        className="w-full border border-ink px-6 py-4 font-mono uppercase text-xs hover:bg-ink hover:text-paper transition-all tracking-widest flex items-center justify-center gap-3"
+                      >
+                        <UploadCloud className="w-4 h-4" />
+                        ВЫБРАТЬ СПИСОК (Active codes)
+                      </button>
+                      <button 
+                        onClick={handleExportConfig}
+                        className="w-full border border-ink/20 px-6 py-4 font-mono uppercase text-[10px] hover:bg-ink/5 transition-all tracking-widest opacity-60 hover:opacity-100"
+                      >
+                        ЭКСПОРТ КОНФИГУРАЦИИ
+                      </button>
+                      {appliedCodes && (
+                        <button 
+                          onClick={() => { setAppliedCodes(null); setShowAppliedOnly(false); }}
+                          className="text-[10px] font-mono uppercase opacity-40 hover:opacity-100 underline decoration-dotted underline-offset-4"
+                        >
+                          Сбросить текущий список ({appliedCodes.size} шт)
+                        </button>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+
                 {activeTab === 'storage' && (
                   <motion.div 
                     initial={{ opacity: 0, y: 10 }}
@@ -843,6 +1015,12 @@ ${topParameters}
                             <div className="flex justify-between border-b border-ink/10 pb-2">
                               <span className="font-mono text-[10px] opacity-50 uppercase">Записей</span>
                               <span className="font-mono text-xs">{dbStatus.count.toLocaleString()}</span>
+                            </div>
+                            <div className="flex justify-between border-b border-ink/10 pb-2">
+                              <span className="font-mono text-[10px] opacity-50 uppercase">Оптимизация</span>
+                              <span className={cn("font-mono text-[10px] px-1", data.some(p => p.isLogging !== undefined) ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800")}>
+                                {data.some(p => p.isLogging !== undefined) ? "ВЫПОЛНЕНА" : "ОЖИДАЕТСЯ"}
+                              </span>
                             </div>
                             <div className="flex justify-between border-b border-ink/10 pb-2">
                               <span className="font-mono text-[10px] opacity-50 uppercase">Обновлено</span>
@@ -891,6 +1069,33 @@ ${topParameters}
                               </button>
                             )}
                           </div>
+                          {dbStatus.count > 0 && (
+                            <div className="space-y-2">
+                              {!data.some(p => p.isLogging !== undefined) ? (
+                                <button 
+                                  onClick={handlePreprocessData}
+                                  className="w-full px-6 py-4 font-mono text-xs uppercase transition-all flex items-center justify-center gap-3 font-bold border-2 bg-amber-500 text-ink border-amber-600 hover:bg-amber-400"
+                                >
+                                  <Sparkles className="w-4 h-4" />
+                                  Очистить логи (AI Оптимизация)
+                                </button>
+                              ) : (
+                                <div className="space-y-2">
+                                  <div className="w-full px-6 py-4 font-mono text-xs uppercase flex items-center justify-center gap-3 font-bold border-2 bg-green-500/10 border-green-500/50 text-green-400">
+                                    <Sparkles className="w-4 h-4" />
+                                    БАЗА ОПТИМИЗИРОВАНА
+                                  </div>
+                                  <button 
+                                    onClick={handleResetOptimization}
+                                    className="w-full px-6 py-2 font-mono text-[10px] uppercase transition-all flex items-center justify-center gap-2 font-bold border border-ink/20 hover:bg-ink/5 opacity-60 hover:opacity-100"
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                    Сбросить оптимизацию (вернуть логи)
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <p className="text-[9px] font-mono opacity-40 text-center uppercase">
                             Доступно на Android, iOS и десктопных браузерах
                           </p>
@@ -930,7 +1135,7 @@ ${topParameters}
                             {hideLogging ? `Логи: Скрыты (${stats.profile1.loggingInApplied})` : `Скрыть Логи (${stats.profile1.loggingInApplied})`}
                           </button>
                           <button 
-                            onClick={() => setCurrentView('applied_upload')}
+                            onClick={() => setActiveTab('profile')}
                             className={cn(
                               "px-3 py-1 border border-ink/40 text-[9px] font-mono uppercase hover:bg-ink hover:text-paper transition-all flex items-center gap-2 whitespace-nowrap",
                               appliedCodes ? "bg-green-100 text-green-900 border-green-600/30" : "bg-white/50"
@@ -979,7 +1184,7 @@ ${topParameters}
                       {filteredData.slice(0, 100).map((row, idx) => (
                         <div 
                           key={idx} 
-                          onClick={() => setSelectedParam(row)}
+                          onClick={() => openParamDetails(row)}
                           className="flex flex-col lg:grid lg:grid-cols-[100px_1.5fr_1fr_2fr_80px] border-b border-ink/10 hover:bg-ink hover:text-paper transition-colors group p-4 lg:p-0 cursor-pointer"
                         >
                           <div className="flex justify-between items-start lg:contents">
@@ -1022,56 +1227,6 @@ ${topParameters}
                           Показаны первые 100 результатов для быстродействия
                         </div>
                       )}
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === 'analysis' && summary && (
-                  <div className="p-8 overflow-y-auto">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      <div className="p-6 border border-ink bg-paper shadow-[4px_4px_0px_0px_#141414]">
-                        <h4 className="text-[10px] font-mono uppercase opacity-50 mb-2">Общий реестр</h4>
-                        <div className="text-4xl font-mono">{summary.totalParameters.toLocaleString()}</div>
-                      </div>
-                      <div className="p-6 border border-ink bg-paper shadow-[4px_4px_0px_0px_#141414]">
-                        <h4 className="text-[10px] font-mono uppercase opacity-50 mb-2">Изменяемые</h4>
-                        <div className="text-4xl font-mono">{summary.controllableCount.toLocaleString()}</div>
-                      </div>
-                      <div className="p-6 border border-ink bg-paper shadow-[4px_4px_0px_0px_#141414]">
-                        <h4 className="text-[10px] font-mono uppercase opacity-50 mb-2">Уровень сложности</h4>
-                        <div className="text-4xl font-mono italic font-serif">V4_EXTENDED</div>
-                      </div>
-                      
-                      <div className="md:col-span-2 p-6 border border-ink bg-white/20">
-                        <h4 className="text-[10px] font-mono uppercase opacity-50 mb-6 font-bold">Архитектура распределения типов</h4>
-                        <div className="space-y-4">
-                          {Object.entries(summary.types).map(([type, count]) => (
-                            <div key={type} className="flex items-center gap-4">
-                              <span className="w-24 text-[10px] font-mono uppercase truncate">{type}</span>
-                              <div className="flex-1 h-3 bg-paper-dark border border-ink/10 relative">
-                                <motion.div 
-                                  initial={{ width: 0 }}
-                                  animate={{ width: `${((count as number) / summary.totalParameters) * 100}%` }}
-                                  className="absolute inset-0 bg-ink"
-                                />
-                              </div>
-                              <span className="w-12 text-right text-[10px] font-mono">{count}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="p-6 border border-ink bg-white/20">
-                        <h4 className="text-[10px] font-mono uppercase opacity-50 mb-6 font-bold">Права доступа</h4>
-                        <div className="space-y-4 font-mono text-[10px]">
-                          {Object.entries(summary.audienceStats).map(([aud, count]) => (
-                            <div key={aud} className="flex justify-between border-b border-ink/10 pb-2">
-                              <span>{aud || "НЕ ОПРЕДЕЛЕНО"}</span>
-                              <span className="font-bold">{count}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
                     </div>
                   </div>
                 )}
@@ -1186,6 +1341,17 @@ ${topParameters}
                                   className="flex items-center gap-1.5 text-paper/70 hover:text-paper text-[10px] font-mono uppercase tracking-widest border border-paper/20 hover:border-paper/60 px-3 py-1.5 transition-all bg-paper/5 hover:bg-paper/10"
                                 >
                                   Копировать
+                                </button>
+                                <button 
+                                  onClick={() => handleVerifyWithWeb(i)}
+                                  disabled={isVerifying !== null || isWaitingForAI}
+                                  className={cn(
+                                    "flex items-center gap-1.5 text-amber-200 hover:text-amber-100 text-[10px] font-mono uppercase tracking-widest border border-amber-500/30 hover:border-amber-500 px-3 py-1.5 transition-all bg-amber-500/10",
+                                    isVerifying === i && "animate-pulse border-amber-500 text-amber-100 bg-amber-500/20"
+                                  )}
+                                >
+                                  <Globe className="w-3 h-3" />
+                                  {isVerifying === i ? "..." : "СВЕРКА / WEB"}
                                 </button>
                               </div>
                             )}
@@ -1540,14 +1706,50 @@ ${topParameters}
               </div>
               
               <div className="flex-1 overflow-y-auto p-8 space-y-8">
+                <div className="flex justify-end">
+                  <button 
+                    onClick={handleTranslate}
+                    disabled={isTranslating}
+                    className={cn(
+                      "flex items-center gap-2 px-4 py-2 border font-mono text-[10px] uppercase transition-all",
+                      isTranslated 
+                        ? "bg-green-600 border-green-600 text-white" 
+                        : "border-ink/20 hover:border-ink hover:bg-ink/5"
+                    )}
+                  >
+                    {isTranslating ? (
+                      <>
+                        <div className="w-3 h-3 border border-ink/30 border-t-ink animate-spin rounded-full" />
+                        Перевод...
+                      </>
+                    ) : isTranslated ? (
+                      <>
+                        <ArrowRightLeft className="w-3.5 h-3.5" />
+                        ОТМЕНА
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        ПЕРЕВОД / AI
+                      </>
+                    )}
+                  </button>
+                </div>
+
                 <section>
                   <label className="text-[10px] font-mono uppercase opacity-40 mb-2 block">Caption & Label</label>
-                  <h2 className="text-2xl font-serif italic text-ink">{selectedParam.DefaultCaption}</h2>
+                  <h2 className="text-2xl font-serif italic text-ink">
+                    {isTranslated && translatedData ? translatedData.caption : selectedParam.DefaultCaption}
+                  </h2>
                 </section>
 
                 <section>
                   <label className="text-[10px] font-mono uppercase opacity-40 mb-2 block">Description & Context</label>
-                  <p className="text-sm font-sans leading-relaxed text-ink/80">{selectedParam.DefaultDescription || "Описание отсутствует в текущей базе метаданных."}</p>
+                  <p className="text-sm font-sans leading-relaxed text-ink/80">
+                    {isTranslated && translatedData 
+                      ? translatedData.description 
+                      : (selectedParam.DefaultDescription || "Описание отсутствует в текущей базе метаданных.")}
+                  </p>
                 </section>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-6 pt-6 border-t border-ink/10">
@@ -1555,7 +1757,7 @@ ${topParameters}
                     <div>
                       <label className="text-[9px] font-mono uppercase opacity-40 mb-1 block">Data Definition</label>
                       <div className="text-[11px] font-mono bg-paper-dark p-2 border border-ink/5 break-all max-h-32 overflow-y-auto">
-                        {selectedParam.DataDefinition}
+                        {isTranslated && translatedData ? translatedData.dataDefinition : selectedParam.DataDefinition}
                       </div>
                     </div>
                     <div>
@@ -1588,7 +1790,9 @@ ${topParameters}
                     </div>
                     <div>
                       <label className="text-[9px] font-mono uppercase opacity-40 mb-1 block">Parsed Audiences</label>
-                      <div className="text-[11px] font-mono font-bold">{selectedParam.parsedAudiences || "Public"}</div>
+                      <div className="text-[11px] font-mono font-bold">
+                        {isTranslated && translatedData ? translatedData.audiences : (selectedParam.parsedAudiences || "Public")}
+                      </div>
                     </div>
                   </div>
                 </div>

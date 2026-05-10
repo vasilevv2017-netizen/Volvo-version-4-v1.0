@@ -14,6 +14,8 @@ export interface VolvoParameter {
   // Computed fields
   parsedType?: string;
   parsedAudiences?: string;
+  isLogging?: boolean;
+  priority?: number;
 }
 
 export interface AnalysisSummary {
